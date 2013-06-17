@@ -1,0 +1,51 @@
+#!/bin/bash
+
+REPO=git@bitbucket.org:uwcoursera/the-hardware-software-interface.git
+TARGET=~/course-materials
+
+if [ ! -d "$TARGET" ]; then
+    echo "Creating directory: $TARGET"
+    mkdir -p "$TARGET"
+    git init "$TARGET" >/dev/null
+    cd "$TARGET"
+    git remote add upstream "$REPO"
+    git pull -q upstream master || { rm -rf $TARGET ; exit $?; }
+    echo "Completed first update!"
+    exit
+elif [ -f "$TARGET" ]; then
+    echo "Conflicting file present: $TARGET"
+    echo "Please move/remove file and try again..."
+    exit 1
+fi
+
+cd "$TARGET" || exit $?
+branch=$(git symbolic-ref --short -q HEAD)
+
+if [[ $branch != "master" ]]; then
+    echo "Error: Current branch of git repository is not master!"
+    echo -e "\E[31;5mWarning:\E[m Manual usage of git on course materials directory is unsupported!!!"
+    exit 1
+fi
+
+echo "Updating course materials in $TARGET"
+git fetch -q upstream || exit $?
+git commit -uno -aqm "student changes" >/dev/null
+git branch -f last-update
+merge=$(git merge -n --no-edit -s recursive -Xpatience -Xignore-space-change -Xours upstream/master) || exit $?
+
+if [[ $merge =~ "Already up-to-date" ]]; then
+    echo "$merge"
+else
+    merges=$(echo "$merge" | awk '/^Auto-merging/ { print substr($0,14)}')
+    if [[ -n $merges ]]; then
+        echo -e "\E[31;5mWarning:\E[m Some locally changed files have been updated."
+        echo "  Please review docs/README.conflicts and the following files:"
+        for f in "$merges"; do
+            echo "    $f"
+            git show "upstream/master:$f" > "$TARGET/$f.pristine"
+            git show "last-update:$f" > "$TARGET/$f.bak"
+        done
+    fi
+    echo "Update complete!"
+    git diff --name-status --summary last-update
+fi

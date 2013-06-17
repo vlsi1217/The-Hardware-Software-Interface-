@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+
+from getpass import getpass
+import argparse
+import email
+import email.encoders
+import email.message
+import hashlib
+import os
+import subprocess
+import sys
+import urllib.request, urllib.parse
+
+def filepath(p):
+    # Convert string to absolute, expanded filepath.
+    return os.path.abspath(os.path.expanduser(p))
+
+session_name = 'hwswinterface-001'
+
+# You may specify your credentials here so you
+# don't have to enter them over and over.
+login_name = None
+password = None
+
+config_filename = '.config'
+
+# Parse command line arguments and return them.
+def parse_cmd_args():
+    parser = argparse.ArgumentParser(description='Coursera Submission System',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('assignment', type=str,
+                        help='Name of assignment for which to submit.')
+    parser.add_argument('-l', '--login', type=str,
+                        help='Login (email address).')
+    parser.add_argument('-p', '--password', type=str,
+                        help='Submission password.')
+    parser.add_argument('-f', '--force', action='store_true',
+                        help='Submit without prompts.')
+    parser.add_argument('-nc', '--no-check', action='store_true',
+                        help='Submit without doing Makefile checks.')
+    parser.add_argument('--course_materials', type=filepath,
+                        default='~/course-materials',
+                        help='Path to course materials directory.')
+
+    return parser.parse_args()
+
+def get_challenge(email, session_name, sid):
+  """Gets the challenge salt from the server. Returns (email,ch,state,ch_aux)."""
+  url = 'https://class.coursera.org/%s/assignment/challenge' % session_name
+  values = {'email_address' : email,
+            'assignment_part_sid' : sid,
+            'response_encoding' : 'delim'}
+  data = urllib.parse.urlencode(values).encode('utf-8')
+  req = urllib.request.Request(url, data)
+  response = urllib.request.urlopen(req)
+  text = response.readall().decode('utf-8').strip()
+
+  # text is of the form email|ch|signature
+  splits = text.split('|')
+  if(len(splits) != 9):
+      print('Badly formatted challenge response: %s' % text, file=sys.stderr)
+  else:
+      return (splits[2], splits[4], splits[6], splits[8])
+
+def challengeResponse(email, passwd, challenge):
+  sha1 = hashlib.sha1()
+  sha1.update("".join([challenge, passwd]).encode('utf-8'))
+  digest = sha1.hexdigest()
+  strAnswer = ''
+  for i in range(0, len(digest)):
+    strAnswer = strAnswer + digest[i]
+  return strAnswer
+
+def submit_file(file, session_name, login, ch_resp, sid, state, ch_aux):
+    with open(file, 'r', encoding='utf-8') as f:
+        source = f.read().encode('utf-8')
+
+    source_64_msg = email.message.Message()
+    source_64_msg.set_payload(source)
+    email.encoders.encode_base64(source_64_msg)
+
+    values = {'assignment_part_sid' : sid,
+              'email_address' : login,
+              'submission' : source_64_msg.get_payload(),
+              'submission_aux' : None,
+              'challenge_response' : ch_resp,
+              'state' : state
+              }
+    url = 'https://class.coursera.org/%s/assignment/submit' % session_name
+    data = urllib.parse.urlencode(values).encode('utf-8')
+    req = urllib.request.Request(url, data)
+    response = urllib.request.urlopen(req)
+    return response.readall().decode('utf-8').strip()
+
+def read_assignment_config(assign_dir):
+    import json
+    try:
+        config_file = os.path.join(assign_dir, config_filename)
+        with open(config_file) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print('Could not find configuration for assignment: %s' % config_file,
+              file=sys.stderr)
+        sys.exit(1)
+    except ValueError:
+        print('Config file not correctly formatted: %s' % config_file,
+              file=sys.stderr)
+        sys.exit(1)
+    except:
+        print('Unexpected error: %s' % sys.exc_info()[1],
+              file=sys.stderr)
+        sys.exit(1)
+
+def submit_part(partSID, file):
+    print('Submitting %s' % file)
+
+    # Get Challenge
+    (login, ch, state, ch_aux) = get_challenge(args.login,
+                                               session_name,
+                                               partSID)
+    if not login or not ch or not state:
+        # Some error occured, error string in first return element.
+        print('\n!! Error: %s\n' % login, file=sys.stderr)
+        sys.exit()
+
+    # Attempt Submission with Challenge
+    ch_resp = challengeResponse(login, args.password, ch)
+
+    return submit_file(file, session_name, login,
+                       ch_resp, partSID, state, ch_aux)
+
+def checkSubmission(path, config):
+    makefile = os.path.join(path, 'Makefile')
+    if os.path.isfile(makefile):
+        print('Checking submission...')
+        success = True
+        with open(os.devnull, 'w') as null:
+            mkdir = '--directory=%s' % path
+            subprocess.call(['make', mkdir, 'clean'], stdout=null, stderr=null)
+            for part in config:
+                check = 'check-%s' % os.path.basename(part['file'])
+                cmd = ['make', '-s', mkdir, check]
+                returncode = subprocess.call(cmd, stderr=null)
+                if returncode != 0:
+                    success = False
+                    print('\033[31;5mWarning:\033[m Failed `make %s`' % check)
+        if success: print('Check succeeded!')
+        else: print('Check failed...')
+
+if __name__ == '__main__':
+    args = parse_cmd_args()
+
+    # Make sure course materials directory exists
+    if not os.path.isdir(args.course_materials):
+        print('Could not find course materials directory: %s' % args.course_materials, file=sys.stderr)
+        sys.exit(1)
+
+    # Find assignment information
+    part_split = args.assignment.split('.', 1)
+    assign_path = os.path.join(args.course_materials, part_split[0])
+    if not os.path.isdir(assign_path):
+        print('No such assignment "%s"!' % part_split[0], file=sys.stderr)
+        print('Available assignments to submit in %s:' % args.course_materials, file=sys.stderr)
+        for dir in os.listdir(args.course_materials):
+            if os.path.isfile(os.path.join(args.course_materials, dir, config_filename)):
+                print('\t'+dir)
+        sys.exit(1)
+
+    # Read in configuration for submitting assignment.
+    config = read_assignment_config(assign_path)
+
+    # Limit submission, if requested
+    if len(part_split) > 1:
+        config = list(filter(lambda part: part['file'].lower().startswith(part_split[1].lower()), config))
+        if not config:
+            print('No submission part matches \'%s\' in the %s assignment!' % (part_split[1],part_split[0]),
+                  file=sys.stderr)
+            sys.exit(1)
+    else: # Scrub optional parts
+        config = list(filter(lambda part: not part.get('optional',False), config))
+        if not config:
+            print('No required files to submit for \'%s\'.' % part_split[0],
+                  file=sys.stderr)
+            print('Please specify part to submit.', file=sys.stderr)
+            sys.exit(1)
+
+    # Get user credentials
+    args.login = (args.login or login_name
+                  or input('Login (email address): '))
+    args.password = (args.password or password
+                     or getpass('Submission Password (from the assignment page; NOT your own account\'s password): '))
+
+    for part in config:
+        # Check that submission file exists
+        part['file'] = file = os.path.join(assign_path, part['file'])
+        if not os.path.isfile(file):
+            print('Submission file not found: %s' % file,
+                  file=sys.stderr)
+            sys.exit(1)
+
+    if not args.force:
+        print('%s submission:' % part_split[0])
+        for part in config: print('  '+part['file'])
+        if not args.no_check:
+            checkSubmission(assign_path, config)
+        while True:
+            print('Are you sure you wish to submit the previous file(s)? [Y/n]')
+            choice = input().strip().lower()
+            if choice in ['','y','ye','yes','yup']:
+                break
+            elif choice in ['n','no','never','nope']:
+                print('Aborting submit!')
+                sys.exit(2)
+
+    for part in config: print(submit_part(part['sid'], part['file']))
