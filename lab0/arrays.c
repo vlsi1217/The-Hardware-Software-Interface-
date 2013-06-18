@@ -53,7 +53,10 @@ int main(int argc, char* argv[]) {
   // to 11 instead? How about 100? 1000? Make sure to set
   // the second argument back to 10 when you are done
   // testing.
-  // Answer:
+  // Answer:It works well when second argument set to 11.
+  // And when set to 100,fillArray seems works well,but after that the malloc
+  // function cause segmentation fault error.
+  // And the sencond argument set to 1000 works the same as 100.
   fillArray(array, 10);
 
   int value;
@@ -65,7 +68,9 @@ int main(int argc, char* argv[]) {
   // TODO(2): We can actually use the address of the value
   // declared here as if it were an array of a single
   // element; why is this possible?
-  // Answer:
+  // Answer:The array name represent the start address of the array.
+  // And single variable's address also represent a array but the array
+  // size is 1.And it can represent like this: int* a[1] = &value.
   fillArray(&value, 1);
   // fillArray should set value to 0 * 3 + 2 = 2.
   assert(value == 2);
@@ -116,8 +121,11 @@ int main(int argc, char* argv[]) {
   // it. valgrind is a tool for analyzing how programs
   // use memory, which is often invaluable for C and
   // C++ programming.
-  // Answer:
-  free(heap_array);
+  // Answer:In fact,remove free seems nothings happen, in fact
+  // it's caues memory leakage.
+  // And when we run it with valgrind, it say that there still 20 bytes
+  // in use when exit.So it's just means memory leakage.
+   free(heap_array);
 
   // TODO(4): Now it's your turn to write some code.
   // Using malloc(), allocate a FourInts struct
@@ -131,5 +139,12 @@ int main(int argc, char* argv[]) {
   // you would expect. (Hint, you'll need to use the
   // -> operator to access fields of a FourInts*
   // variable instead of the . operator).
+  FourInts *p_four = (FourInts *)malloc(sizeof(FourInts));
+  fillArray((int *)p_four,4);
+  assert(p_four->a == 2);
+  assert(p_four->b == 5);
+  assert(p_four->c == 8);
+  assert(four_ints.d == 11);
+  free(p_four);
   return 0;
 }
