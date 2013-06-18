@@ -119,7 +119,10 @@ typedef struct BlockInfo BlockInfo;
    of the previous block from its boundary tag */
 #define TAG_PRECEDING_USED 2
 
-static void examine_heap();
+void examine_heap();
+static void *requestAndCopy(BlockInfo *current,void *ptr,size_t reqSize);
+static void setPrecedingUsedFlag(BlockInfo *block,int flag);
+static void splitBlock(BlockInfo *block,size_t reqSize);
 
 /* Find a free block of the requested size in the free list.  Returns
    NULL if no free block is large enough. */
@@ -395,7 +398,7 @@ void* mm_malloc (size_t size) {
 
 /* Free the block referenced by ptr. */
 void mm_free (void *ptr) {
-  size_t payloadSize;
+  //size_t payloadSize;
   size_t blockTags;
   BlockInfo * blockInfo;
   BlockInfo * followingBlock;
@@ -413,7 +416,7 @@ void mm_free (void *ptr) {
 }
 
 /* Print the heap by iterating through it as an implicit free list. */
-static void examine_heap() {
+void examine_heap() {
   BlockInfo *block;
 
   fprintf(stderr, "FREE_LIST_HEAD: %p\n", (void *)FREE_LIST_HEAD);
@@ -444,4 +447,153 @@ static void examine_heap() {
 // Implement a heap consistency checker as needed.
 int mm_check() {
   return 0;
+}
+
+void* mm_realloc(void* ptr,size_t size)
+{
+    BlockInfo *currentBlock = NULL;
+    BlockInfo *nextBlock = NULL;
+    size_t currentSize,remainSize,reqSize;
+    if(ptr == NULL)
+    {
+        return mm_malloc(size);
+    }
+    if(size == 0 && ptr != NULL)
+    {
+        mm_free(ptr);
+        return NULL;
+    }
+    currentBlock = (BlockInfo *)POINTER_SUB(ptr,WORD_SIZE);
+    currentSize = currentBlock->sizeAndTags;
+    nextBlock = (BlockInfo*)POINTER_ADD(currentBlock,SIZE(currentSize));
+
+    size += WORD_SIZE;
+    if (size <= MIN_BLOCK_SIZE) {
+        reqSize = MIN_BLOCK_SIZE;
+     } else {
+        reqSize = ALIGNMENT * ((size + ALIGNMENT - 1) / ALIGNMENT);
+     }
+
+    if(reqSize<currentSize)
+    {
+        remainSize = currentSize - reqSize;
+        if(remainSize<MIN_BLOCK_SIZE)
+            return ptr;
+        //split the block
+       splitBlock(currentBlock,reqSize);
+       return ptr;
+    }
+    else
+    {
+        if(nextBlock->sizeAndTags & TAG_USED)
+        {
+            //need malloc
+            return requestAndCopy(currentBlock,ptr,size-WORD_SIZE); 
+        }
+        else
+        {
+            size_t allSize = SIZE(nextBlock->sizeAndTags)+currentSize;
+            if(allSize < reqSize)
+            {
+                //nedd Malloc
+                return requestAndCopy(currentBlock,ptr,size-WORD_SIZE);
+            }
+            //combine next block
+            removeFreeBlock(nextBlock);
+            size_t preCeding = currentBlock->sizeAndTags & TAG_PRECEDING_USED;
+            currentBlock->sizeAndTags = allSize|preCeding|TAG_USED;
+
+            if(allSize-reqSize<MIN_BLOCK_SIZE)
+            {
+               return ptr;        
+            }
+            else
+            {
+                splitBlock(currentBlock,reqSize);
+                return ptr;
+            }
+        }
+    }
+}
+
+// there should do assert
+static void splitBlock(BlockInfo *block,size_t reqSize)
+{
+    size_t currentSize,remainSize;
+    size_t precedingUseTag;
+    BlockInfo *nextBlock = NULL;
+    BlockInfo *splitBlock = NULL;
+    currentSize = SIZE(block->sizeAndTags);
+    remainSize = currentSize - reqSize;
+    nextBlock = (BlockInfo *)POINTER_ADD(block,currentSize);
+    
+    //assert
+    assert((currentSize - reqSize)>= MIN_BLOCK_SIZE);
+
+    precedingUseTag = block->sizeAndTags & TAG_PRECEDING_USED;
+    // set current block size and tags
+    block->sizeAndTags = reqSize|precedingUseTag|TAG_USED;
+    
+    // set split block size and tags 
+    splitBlock = (BlockInfo *)POINTER_ADD(block,reqSize);
+    splitBlock->sizeAndTags = remainSize | TAG_PRECEDING_USED;
+    splitBlock->sizeAndTags &= ~TAG_USED;
+    *((size_t *)POINTER_ADD(splitBlock,remainSize-WORD_SIZE)) = splitBlock->sizeAndTags;
+    
+    // set next block preceding flag
+    setPrecedingUsedFlag(nextBlock,0);
+    
+    //insert split block into free block list
+    insertFreeBlock(splitBlock);
+    coalesceFreeBlock(splitBlock);
+
+}
+
+//1 represent set
+//0 represent unset
+static void setPrecedingUsedFlag(BlockInfo *block,int flag)
+{
+    size_t tags;
+    if(flag)
+    {
+        tags = block->sizeAndTags | TAG_PRECEDING_USED;
+    }
+    else
+    {
+        tags = block->sizeAndTags & ~TAG_PRECEDING_USED;
+    }
+    block->sizeAndTags = tags;
+    if(!(block->sizeAndTags & TAG_USED))
+    {
+        block = (BlockInfo*)POINTER_ADD(block,SIZE(tags)-WORD_SIZE);
+        block->sizeAndTags = tags;
+    }
+}
+
+static void *requestAndCopy(BlockInfo *current,void *ptr,size_t reqSize)
+{
+    size_t *newPtr =(size_t*)mm_malloc(reqSize);
+    size_t blockSize = SIZE(current->sizeAndTags);
+
+    size_t *start = (size_t *)ptr;
+    size_t *end = (size_t *)POINTER_ADD(current,blockSize);
+    size_t *newPtr_start = newPtr;
+    BlockInfo *next = NULL;
+    while(start<end)
+    {
+        *newPtr = *start;
+        start++;
+        newPtr++;
+    }
+    current->sizeAndTags &= ~TAG_USED;
+    *((size_t *)POINTER_ADD(current,blockSize-WORD_SIZE)) = current->sizeAndTags;
+    next = (BlockInfo *)POINTER_ADD(current,blockSize);
+    next->sizeAndTags &=~TAG_PRECEDING_USED;
+    if(!(next->sizeAndTags&TAG_USED))
+    {
+        *((size_t *)POINTER_ADD(next,SIZE(next->sizeAndTags)-WORD_SIZE)) = next->sizeAndTags;
+    }
+    insertFreeBlock(current);
+    coalesceFreeBlock(current);
+    return newPtr_start;
 }
